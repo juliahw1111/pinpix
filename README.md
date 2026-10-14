@@ -77,17 +77,6 @@ cd pinpix
 - **找不到 `xcodegen`**：執行 `brew install xcodegen`。
 - **建置失敗**：完整紀錄在 `build/xcodebuild.log`。
 
-## 上架 Mac App Store
-
-1. 加入 [Apple Developer Program](https://developer.apple.com/programs/)（US$99 / 年）。
-2. 在 `project.yml` 填入 `DEVELOPMENT_TEAM`（你的 Team ID），並把 `PRODUCT_BUNDLE_IDENTIFIER` 改成你自己的（例如 `com.你的名字.pinpix`）。
-3. 執行 `xcodegen generate`，然後用 Xcode 打開 `Pinpix.xcodeproj`。
-4. 在 [App Store Connect](https://appstoreconnect.apple.com) 建立 App，填入相同的 Bundle ID。
-5. 在 Xcode 依序執行 Product › Archive → Distribute App → App Store Connect。
-6. 在 App Store Connect 填寫說明、截圖、隱私權政策網址（Pinpix 不收集任何資料），然後送審。
-
-已經符合的上架要求：App Sandbox、Hardened Runtime、使用 ScreenCaptureKit 截圖（沒有呼叫私有 API 或外部指令）、App 圖示。
-
 ## 程式結構
 
 - `Pinpix/App`：App 進入點、選單列圖示、全域快捷鍵
