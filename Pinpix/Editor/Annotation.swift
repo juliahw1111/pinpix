@@ -233,6 +233,23 @@ struct Annotation {
         textWidth = textWidth.map { $0 * s }
     }
 
+    /// 翻轉／旋轉截圖時，把標註的座標一起換過去（文字只移位置、不鏡像）
+    mutating func transform(_ f: (CGPoint) -> CGPoint) {
+        func mr(_ r: CGRect) -> CGRect { CGRect(p1: f(CGPoint(x: r.minX, y: r.minY)), p2: f(CGPoint(x: r.maxX, y: r.maxY))) }
+        switch kind {
+        case let .arrow(a, b): kind = .arrow(f(a), f(b))
+        case let .line(a, b): kind = .line(f(a), f(b))
+        case let .shape(k, r): kind = .shape(k, mr(r))
+        case let .text(t, o, st):
+            // 以文字框中心對應，文字維持正向
+            let r = TextLayout(self).textRect
+            let c = f(CGPoint(x: r.midX, y: r.midY))
+            kind = .text(t, CGPoint(x: c.x - (r.midX - o.x), y: c.y - (r.midY - o.y)), st)
+        case let .pen(pts): kind = .pen(pts.map(f))
+        case let .mosaic(r): kind = .mosaic(mr(r))
+        }
+    }
+
     /// 太小的物件（誤點）不保留
     var isDegenerate: Bool {
         switch kind {

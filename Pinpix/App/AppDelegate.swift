@@ -120,6 +120,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "調整截圖大小…", action: #selector(EditorWindowController.resizeImage(_:)), keyEquivalent: "")
         main.addItem(submenu(edit, title: "編輯"))
 
+        let view = NSMenu()
+        view.addItem(withTitle: "放大", action: #selector(EditorWindowController.zoomIn(_:)), keyEquivalent: "=")
+        // ⌘+（含 Shift 的 + 號）也可以放大
+        view.addItem(withTitle: "放大", action: #selector(EditorWindowController.zoomIn(_:)), keyEquivalent: "+").isAlternate = false
+        view.items.last?.isHidden = true
+        view.items.last?.allowsKeyEquivalentWhenHidden = true
+        view.addItem(withTitle: "縮小", action: #selector(EditorWindowController.zoomOut(_:)), keyEquivalent: "-")
+        view.addItem(.separator())
+        view.addItem(withTitle: "實際大小", action: #selector(EditorWindowController.zoomToActualSize(_:)), keyEquivalent: "1")
+        view.addItem(withTitle: "符合視窗", action: #selector(EditorWindowController.zoomToFit(_:)), keyEquivalent: "0")
+        main.addItem(submenu(view, title: "顯示"))
+
         let window = NSMenu()
         window.addItem(withTitle: "縮到最小", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Pinpix 面板", action: #selector(showHome(_:)), keyEquivalent: "0").target = self

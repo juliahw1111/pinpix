@@ -12,6 +12,8 @@ protocol CanvasViewDelegate: AnyObject {
     func canvasRequestsTool(_ tool: Tool)
     func canvasDidChange()
     func canvasShowMessage(_ message: String)
+    /// 顯示比例改變（1 = 實際大小）
+    func canvasZoomChanged(_ zoom: CGFloat)
 }
 
 final class CanvasView: NSView, NSTextFieldDelegate {
@@ -22,6 +24,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             endTextEditing()
             selectedIndex = nil
             cropRect = nil
+            userZoom = nil
             refreshCanvasBounds()
         }
     }
@@ -62,6 +65,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         case moving(Int, start: CGPoint, original: Annotation)
         case handle(Int, handle: Int, original: Annotation)
         case cropHandle(Int, original: CGRect)
+        /// 空白鍵＋拖曳：移動畫面
+        case pan(startView: CGPoint, startOrigin: CGPoint)
     }
 
     private var drag: Drag = .none
@@ -74,8 +79,16 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private var editingIsNew = false
 
     // 顯示比例：圖片座標 → 視圖座標
-    private(set) var zoom: CGFloat = 1
+    private(set) var zoom: CGFloat = 1 {
+        didSet { if oldValue != zoom { delegate?.canvasZoomChanged(zoom) } }
+    }
     private var imageOrigin: CGPoint = .zero
+    /// 使用者手動縮放的比例；nil = 自動符合視窗
+    private var userZoom: CGFloat?
+    /// 手動縮放時圖片原點的位置（視圖座標）
+    private var userOrigin: CGPoint = .zero
+    private var spaceDown = false
+    static let zoomRange: ClosedRange<CGFloat> = 0.1...8
     /// 畫布範圍（截圖 + 超出截圖的標註）。拖曳中不更新，放開後才重新置中縮放，避免畫面跳動
     private var canvasBounds: CGRect = .zero
     /// 留給浮動工具列的空間（上：標題列，左：工具列，下：動作列）
@@ -105,16 +118,103 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         updateTransform()
     }
 
+    /// 可顯示畫布的區域（扣掉浮動工具列）
+    private var availableRect: CGRect {
+        let i = contentInsets
+        return CGRect(x: i.left, y: i.top, width: max(10, bounds.width - i.left - i.right),
+                      height: max(10, bounds.height - i.top - i.bottom))
+    }
+
+    /// 符合視窗的比例（最大 100%）
+    var fitZoom: CGFloat {
+        let a = availableRect, b = canvasBounds
+        guard b.width > 0, b.height > 0 else { return 1 }
+        return min(1, a.width / b.width, a.height / b.height)
+    }
+
+    var isFitToWindow: Bool { userZoom == nil }
+
     private func updateTransform() {
         guard document != nil, canvasBounds.width > 0, canvasBounds.height > 0 else { return }
         let b = canvasBounds
-        let i = contentInsets
-        let availW = max(10, bounds.width - i.left - i.right), availH = max(10, bounds.height - i.top - i.bottom)
-        zoom = min(1, availW / b.width, availH / b.height)
-        imageOrigin = CGPoint(x: (i.left + (availW - b.width * zoom) / 2 - b.minX * zoom).rounded(),
-                              y: (i.top + (availH - b.height * zoom) / 2 - b.minY * zoom).rounded())
+        let a = availableRect
+        if let z = userZoom {
+            zoom = z
+            // 畫布比可視區小就置中；比較大就限制在不會完全捲出去的範圍
+            func clamp(_ origin: CGFloat, _ minB: CGFloat, _ size: CGFloat, _ aMin: CGFloat, _ aSize: CGFloat) -> CGFloat {
+                let content = size * z
+                if content <= aSize { return aMin + (aSize - content) / 2 - minB * z }
+                let lo = aMin + aSize - content - minB * z, hi = aMin - minB * z
+                return min(max(origin, lo), hi)
+            }
+            userOrigin = CGPoint(x: clamp(userOrigin.x, b.minX, b.width, a.minX, a.width),
+                                 y: clamp(userOrigin.y, b.minY, b.height, a.minY, a.height))
+            imageOrigin = CGPoint(x: userOrigin.x.rounded(), y: userOrigin.y.rounded())
+        } else {
+            zoom = fitZoom
+            imageOrigin = CGPoint(x: (a.minX + (a.width - b.width * zoom) / 2 - b.minX * zoom).rounded(),
+                                  y: (a.minY + (a.height - b.height * zoom) / 2 - b.minY * zoom).rounded())
+        }
         repositionTextField()
+        styleTextField()
         needsDisplay = true
+        refreshCursor()
+    }
+
+    // MARK: Zoom
+
+    /// 以 viewPoint 為中心縮放（預設為可視區中心）
+    func setZoom(_ z: CGFloat, around viewPoint: CGPoint? = nil) {
+        let z = min(max(z, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
+        let v = viewPoint ?? CGPoint(x: availableRect.midX, y: availableRect.midY)
+        let p = toImage(v)
+        userZoom = z
+        userOrigin = CGPoint(x: v.x - p.x * z, y: v.y - p.y * z)
+        updateTransform()
+    }
+
+    func zoomIn() { setZoom(nextZoomStep(up: true)) }
+    func zoomOut() { setZoom(nextZoomStep(up: false)) }
+    func zoomToActualSize() { setZoom(1) }
+
+    func zoomToFit() {
+        userZoom = nil
+        updateTransform()
+    }
+
+    private static let zoomSteps: [CGFloat] = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8]
+
+    private func nextZoomStep(up: Bool) -> CGFloat {
+        if up { return Self.zoomSteps.first { $0 > zoom + 0.001 } ?? Self.zoomRange.upperBound }
+        return Self.zoomSteps.last { $0 < zoom - 0.001 } ?? Self.zoomRange.lowerBound
+    }
+
+    /// 觸控板兩指捏合
+    override func magnify(with event: NSEvent) {
+        guard document != nil else { return }
+        setZoom(zoom * (1 + event.magnification), around: convert(event.locationInWindow, from: nil))
+    }
+
+    /// 觸控板兩指雙擊：符合視窗 ↔ 100%
+    override func smartMagnify(with event: NSEvent) {
+        guard document != nil else { return }
+        if userZoom == nil && fitZoom < 1 { setZoom(1, around: convert(event.locationInWindow, from: nil)) } else { zoomToFit() }
+    }
+
+    /// 兩指滑動／滾輪：移動畫面；按住 ⌘ 或 ⌥：縮放
+    override func scrollWheel(with event: NSEvent) {
+        guard document != nil else { return super.scrollWheel(with: event) }
+        let precise = event.hasPreciseScrollingDeltas
+        if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) {
+            let delta = event.scrollingDeltaY * (precise ? 0.01 : 0.1)
+            setZoom(zoom * exp(delta), around: convert(event.locationInWindow, from: nil))
+            return
+        }
+        guard userZoom != nil else { return }
+        let k: CGFloat = precise ? 1 : 10
+        userOrigin.x += event.scrollingDeltaX * k
+        userOrigin.y += event.scrollingDeltaY * k
+        updateTransform()
     }
 
     func toImage(_ p: CGPoint) -> CGPoint {
@@ -366,6 +466,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             return
         }
         if let field = textField, field.frame.contains(viewPoint) { NSCursor.iBeam.set(); return }
+        if spaceDown { NSCursor.openHand.set(); return }
         cursor(at: toImage(viewPoint)).set()
     }
 
@@ -431,6 +532,13 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         let p = toImage(convert(event.locationInWindow, from: nil))
         dragCheckpointed = false
         drag = .none
+
+        if spaceDown {
+            if userZoom == nil { userZoom = zoom; userOrigin = imageOrigin }
+            drag = .pan(startView: convert(event.locationInWindow, from: nil), startOrigin: userOrigin)
+            NSCursor.closedHand.set()
+            return
+        }
 
         if tool == .crop {
             // 只能拖邊或角調整（往內裁、往外延伸），不另外拉新框
@@ -503,6 +611,12 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
         switch drag {
         case .none: return
+        case let .pan(startView, startOrigin):
+            let v = convert(event.locationInWindow, from: nil)
+            userOrigin = CGPoint(x: startOrigin.x + v.x - startView.x, y: startOrigin.y + v.y - startView.y)
+            updateTransform()
+            NSCursor.closedHand.set()
+            return
         case let .creating(i):
             guard doc.annotations.indices.contains(i) else { return }
             var a = doc.annotations[i]
@@ -568,7 +682,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             if dragCheckpointed { notifyChange() }
         case .cropHandle:
             refreshCanvasBounds()
-        case .none: break
+        case .pan, .none: break
         }
     }
 
@@ -583,6 +697,10 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     override func keyDown(with event: NSEvent) {
         let mods = event.modifierFlags.intersection([.command, .control, .option])
+        if event.keyCode == 49 && mods.isEmpty { // 空白鍵：按住拖曳移動畫面
+            if !spaceDown { spaceDown = true; NSCursor.openHand.set() }
+            return
+        }
         switch event.keyCode {
         case 51, 117: // delete / forward delete
             deleteSelection(); return
@@ -609,6 +727,15 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             if let t = map[c] { delegate?.canvasRequestsTool(t); return }
         }
         super.keyDown(with: event)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if event.keyCode == 49 {
+            spaceDown = false
+            refreshCursor()
+            return
+        }
+        super.keyUp(with: event)
     }
 
     func deleteSelection() {
@@ -645,6 +772,20 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         cropRect = nil
         delegate?.canvasRequestsTool(toolBeforeCrop)
         refreshCanvasBounds()
+    }
+
+    /// 裁切時翻轉／旋轉：截圖、標註、裁切框一起變換
+    func applyImageTransform(_ t: EditorDocument.ImageTransform) {
+        guard let doc = document else { return }
+        endTextEditing()
+        let f = EditorDocument.pointMapping(t, size: doc.imageSize)
+        doc.apply(t)
+        if let c = cropRect {
+            cropRect = CGRect(p1: f(CGPoint(x: c.minX, y: c.minY)), p2: f(CGPoint(x: c.maxX, y: c.maxY)))
+        }
+        refreshCanvasBounds()
+        delegate?.canvasDidChange()
+        delegate?.canvasSelectionChanged(selected)
     }
 
     /// 從寬高欄位設定裁切大小（像素），以左上角為基準

@@ -39,6 +39,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
     private let cropActions = NSStackView()
     private let dragOut = DragOutView()
     private let dimensionButton = NSButton(title: "", target: nil, action: nil)
+    private let zoomButton = NSButton(title: "100%", target: nil, action: nil)
     private let cropWidthField = NSTextField()
     private let cropHeightField = NSTextField()
     private let toast = FloatingBar()
@@ -194,6 +195,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
         cropSize.spacing = 4
         cropSize.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 6)
         cropActions.setViews([
+            iconBarButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "水平翻轉", #selector(flipHorizontal(_:))),
+            iconBarButton("arrow.up.and.down.righttriangle.up.righttriangle.down", "垂直翻轉", #selector(flipVertical(_:))),
+            iconBarButton("rotate.left", "向左旋轉 90°", #selector(rotateLeft(_:))),
+            iconBarButton("rotate.right", "向右旋轉 90°", #selector(rotateRight(_:))),
+            barDivider(),
             cropSize, barDivider(),
             barButton("xmark", "取消", #selector(cancelCrop(_:)), tip: "取消裁切 (Esc)"),
             barButton("checkmark", "套用", #selector(applyCrop(_:)), tip: "套用裁切 (Enter)", prominent: true),
@@ -224,7 +230,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
         toast.embed(toastStack)
         toast.alphaValue = 0
 
-        for v in [palette, actionBar, dimensionButton, toast] as [NSView] {
+        // 縮放比例（點一下選比例）
+        zoomButton.isBordered = false
+        zoomButton.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        zoomButton.contentTintColor = .secondaryLabelColor
+        zoomButton.target = self
+        zoomButton.action = #selector(showZoomMenu(_:))
+        zoomButton.toolTip = "縮放（觸控板捏合、⌘＋／⌘－、⌘0 符合視窗）"
+        zoomButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "縮放")
+        zoomButton.imagePosition = .imageLeading
+        zoomButton.imageHugsTitle = true
+
+        for v in [palette, actionBar, dimensionButton, zoomButton, toast] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
@@ -244,6 +261,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
 
             dimensionButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             dimensionButton.centerYAnchor.constraint(equalTo: actionBar.centerYAnchor),
+            zoomButton.leadingAnchor.constraint(equalTo: dimensionButton.trailingAnchor, constant: 12),
+            zoomButton.centerYAnchor.constraint(equalTo: actionBar.centerYAnchor),
 
             toast.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             toast.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
@@ -268,6 +287,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
         }
         return b
     }
+
+    /// 只有圖示的動作列按鈕
+    private func iconBarButton(_ symbol: String, _ tip: String, _ action: Selector) -> NSButton {
+        let b = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: tip)!, target: self, action: action)
+        b.isBordered = false
+        b.contentTintColor = .labelColor
+        b.toolTip = tip
+        b.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        return b
+    }
+
+    @objc func flipHorizontal(_ sender: Any?) { canvas.applyImageTransform(.flipHorizontal) }
+    @objc func flipVertical(_ sender: Any?) { canvas.applyImageTransform(.flipVertical) }
+    @objc func rotateLeft(_ sender: Any?) { canvas.applyImageTransform(.rotateLeft) }
+    @objc func rotateRight(_ sender: Any?) { canvas.applyImageTransform(.rotateRight) }
 
     private func barDivider() -> NSView {
         let b = NSBox()
@@ -432,6 +467,38 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
     func canvasDidChange() { updateDimension() }
     func canvasShowMessage(_ message: String) { showToast(message) }
 
+    func canvasZoomChanged(_ zoom: CGFloat) {
+        zoomButton.title = "\(Int((zoom * 100).rounded()))%"
+    }
+
+    // MARK: 縮放
+
+    @objc func zoomIn(_ sender: Any?) { canvas.zoomIn() }
+    @objc func zoomOut(_ sender: Any?) { canvas.zoomOut() }
+    @objc func zoomToFit(_ sender: Any?) { canvas.zoomToFit() }
+    @objc func zoomToActualSize(_ sender: Any?) { canvas.zoomToActualSize() }
+
+    @objc private func showZoomMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let fit = NSMenuItem(title: "符合視窗", action: #selector(zoomToFit(_:)), keyEquivalent: "0")
+        fit.state = canvas.isFitToWindow ? .on : .off
+        menu.addItem(fit)
+        menu.addItem(.separator())
+        for pct in [50, 100, 200, 400] {
+            let item = NSMenuItem(title: "\(pct)%", action: #selector(zoomPresetPicked(_:)), keyEquivalent: pct == 100 ? "1" : "")
+            item.tag = pct
+            item.state = !canvas.isFitToWindow && abs(canvas.zoom * 100 - CGFloat(pct)) < 0.5 ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "放大", action: #selector(zoomIn(_:)), keyEquivalent: "="))
+        menu.addItem(NSMenuItem(title: "縮小", action: #selector(zoomOut(_:)), keyEquivalent: "-"))
+        for item in menu.items { item.target = self }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func zoomPresetPicked(_ item: NSMenuItem) { canvas.setZoom(CGFloat(item.tag) / 100) }
+
     func canvasCropSizeChanged(_ pixelSize: CGSize) {
         cropWidthField.integerValue = Int(pixelSize.width)
         cropHeightField.integerValue = Int(pixelSize.height)
@@ -567,6 +634,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, Canvas
         case #selector(copy(_:)), #selector(saveDocumentAs(_:)), #selector(saveDocument(_:)), #selector(resizeImage(_:)):
             return editorDoc != nil
         case #selector(delete(_:)): return canvas.selected != nil
+        case #selector(zoomIn(_:)), #selector(zoomOut(_:)), #selector(zoomToFit(_:)), #selector(zoomToActualSize(_:)):
+            return editorDoc != nil
         default: return true
         }
     }

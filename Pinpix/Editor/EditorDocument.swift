@@ -128,6 +128,45 @@ final class EditorDocument {
         changed()
     }
 
+    enum ImageTransform {
+        case flipHorizontal, flipVertical, rotateLeft, rotateRight
+    }
+
+    /// 這個變換對應的座標換算（圖片點座標，左上原點）；size 為變換前的圖片大小
+    static func pointMapping(_ t: ImageTransform, size: CGSize) -> (CGPoint) -> CGPoint {
+        let w = size.width, h = size.height
+        switch t {
+        case .flipHorizontal: return { CGPoint(x: w - $0.x, y: $0.y) }
+        case .flipVertical: return { CGPoint(x: $0.x, y: h - $0.y) }
+        case .rotateLeft: return { CGPoint(x: $0.y, y: w - $0.x) }
+        case .rotateRight: return { CGPoint(x: h - $0.y, y: $0.x) }
+        }
+    }
+
+    /// 翻轉／旋轉截圖，標註跟著一起換位置
+    func apply(_ t: ImageTransform) {
+        let w = base.width, h = base.height
+        let rotated = t == .rotateLeft || t == .rotateRight
+        let nw = rotated ? h : w, nh = rotated ? w : h
+        guard let ctx = CGContext(data: nil, width: nw, height: nh, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: base.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        // CG 原點在左下
+        switch t {
+        case .flipHorizontal: ctx.translateBy(x: CGFloat(w), y: 0); ctx.scaleBy(x: -1, y: 1)
+        case .flipVertical: ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1)
+        case .rotateLeft: ctx.translateBy(x: CGFloat(h), y: 0); ctx.rotate(by: .pi / 2)
+        case .rotateRight: ctx.translateBy(x: 0, y: CGFloat(w)); ctx.rotate(by: -.pi / 2)
+        }
+        ctx.draw(base, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let img = ctx.makeImage() else { return }
+        let f = Self.pointMapping(t, size: imageSize)
+        checkpoint()
+        base = img
+        for i in annotations.indices { annotations[i].transform(f) }
+        changed()
+    }
+
     func resize(toPixelWidth w: Int, height h: Int) {
         guard w >= 1, h >= 1, w <= 16000, h <= 16000, w != base.width || h != base.height else { return }
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
